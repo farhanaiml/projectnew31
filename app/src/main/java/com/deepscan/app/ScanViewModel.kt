@@ -1,6 +1,8 @@
 package com.deepscan.app
 
 import android.os.Environment
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
