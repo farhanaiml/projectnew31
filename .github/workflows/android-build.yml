@@ -2,7 +2,7 @@ name: DeepScan Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, deepscan-v2]
 permissions:
   contents: read
 jobs:
