@@ -1,0 +1,106 @@
+name: DeepScan Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile, unit tests, lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Configure Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android API 35
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Configure Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Compile, lint and JVM unit tests
+        run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon --stacktrace
+      - name: Save pre-test APK for verification job
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepscan-ci-internal-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 2
+      - name: Preserve unit test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepScan-static-test-results
+          path: |
+            app/build/reports/tests/
+            app/build/reports/lint-results-debug.html
+            app/build/test-results/
+          if-no-files-found: ignore
+
+  emulator-smoke:
+    name: Android emulator launch and interaction smoke tests
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run app launch test on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: gradle :app:connectedDebugAndroidTest --no-daemon --stacktrace
+      - name: Preserve emulator test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepScan-emulator-test-results
+          path: |
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+
+  verified-apk:
+    name: Release APK only after build + emulator checks pass
+    needs: [build, emulator-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download already-built APK
+        uses: actions/download-artifact@v4
+        with:
+          name: deepscan-ci-internal-apk
+          path: .
+      - name: Publish tested installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepScan-tested-installable-APK
+          path: app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
