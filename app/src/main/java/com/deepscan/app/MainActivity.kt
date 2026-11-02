@@ -1,5 +1,7 @@
 package com.deepscan.app
 
+import android.content.Context
+import android.content.res.Configuration
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -24,10 +26,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -46,31 +50,54 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import java.io.File
 import java.util.Date
 
-private val Background = Color(0xFF09111E)
-private val CardBg = Color(0xFF142337)
-private val Card2 = Color(0xFF1B2D43)
-private val Muted = Color(0xFF9AAEC6)
-private val Mint = Color(0xFF62F2CF)
-private val White = Color(0xFFF5FAFF)
-private val Blue = Color(0xFF79AFFC)
-private val Amber = Color(0xFFFFC978)
-private val Red = Color(0xFFFF8B8B)
+private val Background @Composable get() = MaterialTheme.colorScheme.background
+private val CardBg @Composable get() = MaterialTheme.colorScheme.surface
+private val Card2 @Composable get() = MaterialTheme.colorScheme.surfaceVariant
+private val Muted @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+private val Mint @Composable get() = MaterialTheme.colorScheme.primary
+private val White @Composable get() = MaterialTheme.colorScheme.onSurface
+private val Blue @Composable get() = MaterialTheme.colorScheme.secondary
+private val Amber @Composable get() = MaterialTheme.colorScheme.tertiary
+private val Red @Composable get() = MaterialTheme.colorScheme.error
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(
-                primary = Mint, onPrimary = Background, secondary = Blue,
-                background = Background, surface = CardBg, onSurface = White,
-                error = Red
-            )) { DeepScanApp() }
+            val context = LocalContext.current
+            val preferences = remember { context.getSharedPreferences("deepscan-v2-settings", Context.MODE_PRIVATE) }
+            var themePreference by remember { mutableStateOf(preferences.getString("theme", "SYSTEM") ?: "SYSTEM") }
+            val systemDark = (LocalConfiguration.current.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+            val isDark = when (themePreference) {
+                "DARK" -> true
+                "LIGHT" -> false
+                else -> systemDark
+            }
+            val colors = if (isDark) darkColorScheme(
+                primary = Color(0xFF62F2CF), onPrimary = Color(0xFF09111E),
+                secondary = Color(0xFF79AFFC), tertiary = Color(0xFFFFC978),
+                background = Color(0xFF09111E), surface = Color(0xFF142337),
+                surfaceVariant = Color(0xFF1B2D43), onSurface = Color(0xFFF5FAFF),
+                onSurfaceVariant = Color(0xFF9AAEC6), error = Color(0xFFFF8B8B)
+            ) else lightColorScheme(
+                primary = Color(0xFF006B5C), onPrimary = Color.White,
+                secondary = Color(0xFF275BB4), tertiary = Color(0xFF986000),
+                background = Color(0xFFF7F9FC), surface = Color.White,
+                surfaceVariant = Color(0xFFE9EFF5), onSurface = Color(0xFF172437),
+                onSurfaceVariant = Color(0xFF5A6674), error = Color(0xFFB3261E)
+            )
+            MaterialTheme(colorScheme = colors) {
+                DeepScanApp(themePreference = themePreference, onThemeChange = { choice ->
+                    themePreference = choice
+                    preferences.edit().putString("theme", choice).apply()
+                })
+            }
         }
     }
 }
 
 @Composable
-private fun DeepScanApp(vm: ScanViewModel = viewModel()) {
+private fun DeepScanApp(themePreference: String, onThemeChange: (String) -> Unit, vm: ScanViewModel = viewModel()) {
     val activity = LocalContext.current as Activity
     val lifecycleOwner = LocalLifecycleOwner.current
     var permitted by remember { mutableStateOf(Environment.isExternalStorageManager()) }
@@ -79,6 +106,13 @@ private fun DeepScanApp(vm: ScanViewModel = viewModel()) {
     var folder by remember { mutableStateOf<String?>(null) }
     var explorerMode by remember { mutableIntStateOf(0) }
     val report = vm.report
+    val context = LocalContext.current
+    var snapshots by remember { mutableStateOf(StorageHistoryStore.read(context)) }
+    LaunchedEffect(report) {
+        if (report != null && !vm.scanning && !report.truncated) {
+            snapshots = StorageHistoryStore.record(context, report)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         permitted = Environment.isExternalStorageManager()
@@ -121,8 +155,8 @@ private fun DeepScanApp(vm: ScanViewModel = viewModel()) {
         containerColor = Background,
         bottomBar = {
             NavigationBar(containerColor = CardBg, tonalElevation = 0.dp) {
-                listOf("Overview", "Explore", "Duplicates", "About").forEachIndexed { i, name ->
-                    val icon = listOf("◈", "▦", "⧉", "ⓘ")[i]
+                listOf("Home", "Explore", "Cleanup", "Settings").forEachIndexed { i, name ->
+                    val icon = listOf("⌂", "▦", "◎", "⚙")[i]
                     NavigationBarItem(
                         selected = page == i, onClick = { page = i },
                         icon = { Text(icon, fontSize = 22.sp) },
@@ -142,12 +176,12 @@ private fun DeepScanApp(vm: ScanViewModel = viewModel()) {
             if (!permitted && page != 3) {
                 AccessScreen(onRequest = { askAccess() })
             } else when (page) {
-                0 -> OverviewPage(vm, report, onExplore = { page = 1; explorerMode = 1 },
+                0 -> OverviewPage(vm, report, snapshots, onExplore = { page = 1; explorerMode = 1 },
                     onDuplicates = { page = 2 }, onSelect = { selected = it })
                 1 -> ExplorerPage(report, folder, onFolder = { folder = it }, explorerMode,
                     onMode = { explorerMode = it }, onSelect = { selected = it })
                 2 -> DuplicatesPage(report, onSelect = { selected = it })
-                else -> AboutPage(permitted, onRequest = { askAccess() })
+                else -> AboutPage(permitted, onRequest = { askAccess() }, themePreference = themePreference, onThemeChange = onThemeChange, snapshots = snapshots)
             }
         }
     }
@@ -209,7 +243,7 @@ private fun AccessScreen(onRequest: () -> Unit) {
 
 @Composable
 private fun OverviewPage(
-    vm: ScanViewModel, report: ScanReport?, onExplore: () -> Unit,
+    vm: ScanViewModel, report: ScanReport?, snapshots: List<StorageSnapshot>, onExplore: () -> Unit,
     onDuplicates: () -> Unit, onSelect: (ScanItem) -> Unit
 ) {
     val root = remember { Environment.getExternalStorageDirectory() }
@@ -286,6 +320,44 @@ private fun OverviewPage(
                     Spacer(Modifier.height(10.dp))
                     Text("Scan reached its safety limit of 200,000 files; some results may be missing.",
                         color = Amber, fontSize = 12.sp)
+                }
+            }
+            item {
+                ElevatedPanel {
+                    Text("STORAGE X-RAY · LARGEST TOP-LEVEL FOLDERS", color = Mint,
+                        fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(12.dp))
+                    val big = report.folders.filter { it.parent == report.rootPath }
+                        .sortedByDescending { it.bytes }.take(7)
+                    big.forEach { folder ->
+                        val percentage = (folder.bytes.toFloat() / report.scannedBytes.coerceAtLeast(1L)).coerceIn(0f, 1f)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(folder.name, modifier = Modifier.weight(1f), maxLines = 1,
+                                overflow = TextOverflow.Ellipsis, fontSize = 12.sp, color = White)
+                            Text(readableSize(folder.bytes), fontSize = 11.sp, color = Muted)
+                        }
+                        Spacer(Modifier.height(5.dp))
+                        LinearProgressIndicator(progress = { percentage }, modifier = Modifier
+                            .fillMaxWidth().height(7.dp).clip(RoundedCornerShape(6.dp)),
+                            color = Blue, trackColor = Card2)
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    Text("Bars represent the proportion of mapped shared-file bytes; inaccessible space is excluded.",
+                        fontSize = 10.sp, color = Muted)
+                }
+            }
+            if (snapshots.size >= 2) item {
+                val previous = snapshots[snapshots.lastIndex - 1]
+                val latest = snapshots.last()
+                val diff = latest.mappedBytes - previous.mappedBytes
+                ElevatedPanel {
+                    Text("CHANGE DETECTIVE", color = Mint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(9.dp))
+                    Text((if (diff > 0) "+" else "") + readableSize(diff),
+                        color = if (diff > 0) Amber else Mint, fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold)
+                    Text("Mapped shared-file change since the prior completed scan",
+                        color = Muted, fontSize = 12.sp)
                 }
             }
             item { SectionHeading("Heavy hitters", "Largest files", onExplore) }
@@ -398,11 +470,11 @@ private fun DuplicatesPage(report: ScanReport?, onSelect: (ScanItem) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
-            Text("Duplicate detective", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
-            Text("Exact matches, verified by SHA-256", color = Muted, fontSize = 12.sp)
+            Text("Cleanup preview", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
+            Text("Review duplicate copies before removing anything", color = Muted, fontSize = 12.sp)
             Spacer(Modifier.height(16.dp))
             ElevatedPanel {
-                Text("POTENTIAL SPACE TO RECOVER", color = Muted, fontSize = 10.sp,
+                Text("ESTIMATED DUPLICATE SAVINGS · NO FILES DELETED", color = Muted, fontSize = 10.sp,
                     letterSpacing = 1.3.sp)
                 Spacer(Modifier.height(7.dp))
                 Text(readableSize(report?.reclaimableBytes ?: 0), color = Mint,
@@ -452,12 +524,38 @@ private fun DuplicatesPage(report: ScanReport?, onSelect: (ScanItem) -> Unit) {
 }
 
 @Composable
-private fun AboutPage(permitted: Boolean, onRequest: () -> Unit) {
+private fun AboutPage(permitted: Boolean, onRequest: () -> Unit, themePreference: String, onThemeChange: (String) -> Unit, snapshots: List<StorageSnapshot>) {
     LazyColumn(contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(15.dp)) {
         item {
             Text("About this scan", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
             Text("Transparent about what Android allows", color = Muted, fontSize = 12.sp)
+        }
+        item {
+            ElevatedPanel {
+                Text("APPEARANCE", color = Mint, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(10.dp))
+                listOf("SYSTEM" to "Follow system", "LIGHT" to "Light", "DARK" to "Dark").forEach { (choice, label) ->
+                    Row(Modifier.fillMaxWidth().clickable { onThemeChange(choice) }
+                        .padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = themePreference == choice, onClick = { onThemeChange(choice) })
+                        Spacer(Modifier.width(6.dp))
+                        Text(label, color = White)
+                    }
+                }
+            }
+        }
+        if (snapshots.isNotEmpty()) item {
+            ElevatedPanel {
+                Text("SCAN HISTORY", color = Mint, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                snapshots.takeLast(5).reversed().forEach { snap ->
+                    Text("${java.text.DateFormat.getDateTimeInstance().format(Date(snap.capturedAt))} · ${readableSize(snap.mappedBytes)} · ${snap.fileCount} files",
+                        color = White, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                }
+                Text("Only summaries are stored on this device.", color = Muted, fontSize = 11.sp)
+            }
         }
         item {
             ElevatedPanel {
